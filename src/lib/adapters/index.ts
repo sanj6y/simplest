@@ -13,6 +13,16 @@ export interface Adapter {
   prepare?(): Promise<void>;
   /** Milliseconds to wait for combobox menus to render. */
   menuDelay?: number;
+  /**
+   * Wait for the page's network to go idle (and at least this long since navigation) before filling.
+   * Forms that autosave drafts (Ashby) drop changes made before their initial state has loaded.
+   */
+  settleMs?: number;
+  /**
+   * After filling, click toggle buttons and checkboxes away and back so the site sees a fresh change
+   * event once it is ready. Needed on Ashby, where an early click updates the UI but is never saved.
+   */
+  reassertToggles?: boolean;
 }
 
 const greenhouse: Adapter = {
@@ -35,6 +45,8 @@ const ashby: Adapter = {
   addEducation: /add (another )?education/i,
   addWork: /add (another )?(experience|position)/i,
   menuDelay: 400,
+  settleMs: 1500,
+  reassertToggles: true,
 };
 
 const workday: Adapter = {

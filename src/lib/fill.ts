@@ -187,6 +187,68 @@ export function fillFile(field: Field, stored: StoredFile): FillOutcome {
   }
 }
 
+/**
+ * Wait until no network resource has completed for `idleMs`, and until at least `minSinceNavMs`
+ * have passed since navigation, giving up after `maxMs`.
+ */
+export async function waitForSettle(minSinceNavMs: number, idleMs = 500, maxMs = 6000): Promise<void> {
+  const start = performance.now();
+  const remaining = minSinceNavMs - performance.now();
+  if (remaining > 0) await sleep(Math.min(remaining, maxMs));
+  let last = performance.getEntriesByType('resource').length;
+  let lastChange = performance.now();
+  while (performance.now() - start < maxMs) {
+    await sleep(100);
+    const n = performance.getEntriesByType('resource').length;
+    if (n !== last) {
+      last = n;
+      lastChange = performance.now();
+    } else if (performance.now() - lastChange >= idleMs) {
+      break;
+    }
+  }
+}
+
+function pressToggle(btn: HTMLElement) {
+  fire(btn, 'mousedown', { button: 0 });
+  fire(btn, 'mouseup', { button: 0 });
+  btn.click();
+}
+
+/**
+ * Re-apply a toggle-button or checkbox choice by clicking away and back, so the site receives a
+ * fresh change after its own state has loaded. Ends in the same visible state it started in.
+ */
+export async function reassertToggle(field: Field): Promise<void> {
+  if (field.kind === 'buttons' && field.buttons) {
+    const isOn = (b: HTMLElement) => b.getAttribute('aria-pressed') === 'true' || b.getAttribute('aria-checked') === 'true' || b.getAttribute('aria-selected') === 'true';
+    const pressed = field.buttons.find(isOn);
+    const other = field.buttons.find((b) => b !== pressed);
+    if (!pressed || !other) return;
+    pressToggle(other);
+    // Each click triggers an autosave request; the next click is dropped while one is in flight.
+    await waitForSettle(0, 400, 3000);
+    pressToggle(pressed);
+    await waitForSettle(0, 400, 3000);
+    if (!isOn(pressed)) {
+      pressToggle(pressed);
+      await waitForSettle(0, 400, 3000);
+    }
+    return;
+  }
+  if (field.kind === 'checkbox') {
+    const input = (field.members?.[0] ?? field.el) as HTMLInputElement;
+    if (!input.checked) return;
+    clickInput(input);
+    await waitForSettle(0, 400, 3000);
+    if (!input.checked) {
+      clickInput(input);
+      await waitForSettle(0, 400, 3000);
+    }
+    if (!input.checked) clickInput(input);
+  }
+}
+
 export interface FillContext {
   overwrite: boolean;
   menuDelay: number;

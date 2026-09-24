@@ -3,7 +3,7 @@
  */
 import { browser } from 'wxt/browser';
 import { pickAdapter, findButton, Adapter } from './adapters';
-import { fillField, fillFile, FillOutcome } from './fill';
+import { fillField, fillFile, FillOutcome, reassertToggle, waitForSettle } from './fill';
 import { KBEntry, findKBMatch, learn } from './kb';
 import type { ClassifyRequest, ClassifyResponse, FieldSummary, FillReport, LLMAnswer } from './messages';
 import { Profile, profileSummary, renderTemplate } from './profile';
@@ -60,6 +60,10 @@ export async function runFill(opts: { onProgress?: (msg: string) => void } = {})
   const ctx = { overwrite: settings.overwriteExisting, menuDelay: adapter.menuDelay ?? 350 };
 
   await adapter.prepare?.();
+  if (adapter.settleMs) {
+    progress('Waiting for the page to settle…');
+    await waitForSettle(adapter.settleMs);
+  }
 
   // Make sure there are enough education / work rows before scanning.
   const countSchools = () => scanFields().filter((f) => /school|universit|college|institution/i.test(`${f.label} ${f.hints}`) && f.kind !== 'radio' && f.kind !== 'checkbox').length;
@@ -72,8 +76,10 @@ export async function runFill(opts: { onProgress?: (msg: string) => void } = {})
   const rules = createRuleEngine(profile);
   const unresolved: Field[] = [];
 
+  const filledToggles: Field[] = [];
   const record = (f: Field, outcome: FillOutcome | 'skip' | 'pending', source: string) => {
     report.details.push({ label: f.label || f.hints, outcome, source });
+    if (outcome === 'filled' && (f.kind === 'buttons' || f.kind === 'checkbox')) filledToggles.push(f);
     if (outcome === 'filled') report.filled++;
     else if (outcome === 'pending') report.asked++;
     else if (outcome === 'skip' || outcome === 'already') report.skipped++;
@@ -223,6 +229,12 @@ export async function runFill(opts: { onProgress?: (msg: string) => void } = {})
     }
   }
 
+  if (adapter.reassertToggles && filledToggles.length) {
+    progress('Re-checking toggles…');
+    await waitForSettle(0, 500, 3000);
+    for (const f of filledToggles) await reassertToggle(f);
+  }
+
   await saveKB(kb);
   return { report, pending, adapter: adapter.name };
 }
@@ -234,14 +246,20 @@ export async function answerPending(items: { q: PendingQuestion; answer: string;
   const adapter = pickAdapter();
   const ctx = { overwrite: true, menuDelay: adapter.menuDelay ?? 350 };
   let filled = 0;
+  const toggles: Field[] = [];
   for (const { q, answer, remember } of items) {
     if (!answer) continue;
     const outcome = await fillField(q.field, renderTemplate(answer, profile), ctx);
     if (outcome === 'filled' || outcome === 'already') filled++;
+    if (outcome === 'filled' && (q.field.kind === 'buttons' || q.field.kind === 'checkbox')) toggles.push(q.field);
     if (remember) {
       const kind = q.kind ?? (q.field.kind === 'checkbox' ? 'agree' : q.options.length ? 'choice' : 'text');
       kb = learn(kb, { key: q.key || q.question, label: q.field.label, answer, question: q.question, kind });
     }
+  }
+  if (adapter.reassertToggles && toggles.length) {
+    await waitForSettle(0, 500, 3000);
+    for (const f of toggles) await reassertToggle(f);
   }
   await saveKB(kb);
   return filled;
